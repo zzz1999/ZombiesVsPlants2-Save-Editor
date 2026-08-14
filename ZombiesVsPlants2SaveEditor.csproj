@@ -6,10 +6,11 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>ZombiesVsPlants2.SaveEditor</AssemblyName>
+    <AssemblyTitle>Zombies vs Plants 2 Save Editor</AssemblyTitle>
     <RootNamespace>ZombiesVsPlants2.SaveEditor</RootNamespace>
     <Product>Zombies vs Plants 2 Save Editor</Product>
     <Description>Terminal user interface for editing standard RTON v1 pp.dat save files.</Description>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <DebugType>embedded</DebugType>
     <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>

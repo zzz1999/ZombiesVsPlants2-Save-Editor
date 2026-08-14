@@ -7,11 +7,15 @@ The published executable enters the TUI by default. File loading, profile discov
 ## TUI capabilities
 
 - Automatically discovers every profile in the loaded save.
-- Displays profile names, resources, plant-record counts, file status, and RTON metadata.
+- Displays profile names, resources, unlocked-plant counts, file status, and RTON metadata.
 - Edits individual resource fields or assigns one value to all five resource fields.
-- Browses plant records without requiring the user to know an ID.
-- Batch-adjusts level, mastery, and experience values across all detected plant records.
-- Locates a specific plant by ID when needed.
+- Resolves supported plant IDs to English names and keeps unknown future IDs visible.
+- Unlocks a plant through the profile ownership array without changing its progression values.
+- Edits player-visible Levels with per-plant maxima of 1, 10, 15, or 20.
+- Applies Mastery only where supported, with a maximum of 200.
+- Edits Seed Packets from 0 through 9,999,999.
+- Keeps Imitater at fixed Level 1 with no Mastery progression.
+- Locates a specific plant by ID or English name when needed.
 - Searches the decoded tree for dynamically named scalar fields.
 - Supports undo, reload, Save As, and in-place save from the TUI.
 
@@ -21,16 +25,17 @@ The editor uses its own type-preserving standard RTON v1 codec. It preserves ori
 
 - Fixed-width, raw-varint, ZigZag, and unsigned integers.
 - `f32` and `f64`, including unchanged non-finite bit patterns.
-- Latin-1 and UTF-8 direct and interned strings.
+- Legacy single-byte and UTF-8 direct and interned strings.
+- Automatic promotion to UTF-8 when an edited string is not ASCII.
 - Unicode scalar counts for UTF-8 strings.
 - Objects and capacity-based arrays with early terminators.
 - Opaque RTID and binary-blob payload round trips.
 
-Compact runtime RTON (`0x00010001`, tags `0xB0` through `0xBC`) is intentionally outside the project scope.
+Compact runtime tags `0xB0` through `0xBB` are intentionally outside the project scope. Standard v1 Boolean tag `0xBC` is supported with byte-preserving no-op round trips.
 
 ## Save pipeline
 
-In-place saves use a same-directory temporary file, flush it to disk, decode and compare the written bytes, create a timestamped backup, and then replace the destination. The editor also rejects an in-place save if the loaded file changed externally after it was opened.
+Saves use a same-directory temporary file, flush it to disk, decode and compare the written bytes, revalidate the destination immediately before commit, and atomically create or replace the destination. Existing destinations receive a timestamped backup, and externally changed files are rejected.
 
 ## Development
 
@@ -57,9 +62,10 @@ Developer-only diagnostics:
 dotnet run -c Release -- --inspect <pp.dat>
 dotnet run -c Release -- --self-test <pp.dat>
 dotnet run -c Release -- --roundtrip <input.dat> <output.dat>
+dotnet run -c Release -- --fixture-test
 ```
 
-The self-test verifies byte-identical no-op round trips, editable Unicode strings, negative ZigZag values, Latin-1 strings, binary blobs, signaling-NaN preservation, capacity arrays, malformed VarInt rejection, undo behavior, backups, transactional saves, and external-change conflict detection.
+The tests verify byte-identical no-op round trips, UTF-8 promotion, legacy string preservation, binary blobs, RTIDs, Boolean payloads, signaling-NaN preservation, capacity arrays, malformed VarInt rejection, catalog limits, ownership edits, undo behavior, backups, transactional saves, and external-change conflict detection.
 
 ## Continuous delivery
 
@@ -71,6 +77,10 @@ The self-test verifies byte-identical no-op round trips, editable Unicode string
 - `Editor/`: profile navigation, dynamic scalar search, undo, and save sessions.
 - `Tui/`: keyboard-driven terminal interface.
 - `Diagnostics/`: inspection and regression-test entry points.
+
+## Disclaimer
+
+This project is intended for private, offline experimentation and technical research. Do not use it for online competition, harassment, resale, attention-seeking, or bragging in player communities. Do not flood communities with modified saves or present the tool as an exploit trophy. Keep its use low-key and respect other players and community spaces.
 
 ## License
 

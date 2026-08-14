@@ -10,7 +10,8 @@ internal sealed class ProfileView
     public required RtonObject Data { get; init; }
 
     public string Name => GetString("n") ?? $"Profile {Index + 1}";
-    public string? LoginLabel => GetString("l");
+    public string? ActivityLabel => GetString("l");
+    public int UnlockedPlantCount => GetUnlockedPlantIds().Count;
     public int PliEntryCount => GetArray("pli")?.Items.Count ?? 0;
     public int PlantStatCount => GetArray("plis")?.Items.Count ?? 0;
 
@@ -77,6 +78,84 @@ internal sealed class ProfileView
 
         return result;
     }
+
+    public bool IsPlantUnlocked(BigInteger plantId) => GetUnlockedPlantIds().Contains(plantId);
+
+    public bool UnlockPlant(BigInteger plantId)
+    {
+        if (plantId < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(plantId), "A plant ID cannot be negative.");
+        }
+
+        RtonValue ownershipValue = GetValue("p")
+            ?? throw new InvalidDataException("Profile field 'p' is missing, so plant ownership cannot be edited.");
+        if (ownershipValue.Kind != RtonValueKind.Array)
+        {
+            throw new InvalidDataException("Profile field 'p' is not an array.");
+        }
+
+        RtonArray ownership = ownershipValue.AsArray();
+        if (ownership.Items.Any(item => TryGetInteger(item, out BigInteger value) && value == plantId))
+        {
+            return false;
+        }
+
+        RtonValue template = ownership.Items.FirstOrDefault(IsIntegerValue)
+            ?? GetPlantStats().FirstOrDefault(record => record.PlantId == plantId)?.Record.FindValue("p")
+            ?? throw new InvalidDataException($"No integer template is available for plant ID {plantId}.");
+        RtonValue newOwnershipEntry = CloneInteger(template);
+        newOwnershipEntry.SetInteger(plantId);
+        ownership.Items.Add(newOwnershipEntry);
+        return true;
+    }
+
+    private HashSet<BigInteger> GetUnlockedPlantIds()
+    {
+        HashSet<BigInteger> result = [];
+        RtonArray? ownership = GetArray("p");
+        if (ownership is null)
+        {
+            return result;
+        }
+
+        foreach (RtonValue item in ownership.Items)
+        {
+            if (TryGetInteger(item, out BigInteger value))
+            {
+                result.Add(value);
+            }
+        }
+
+        return result;
+    }
+
+    private static bool IsIntegerValue(RtonValue value) =>
+        value.Kind is RtonValueKind.SignedInteger or RtonValueKind.UnsignedInteger;
+
+    private static bool TryGetInteger(RtonValue value, out BigInteger result)
+    {
+        if (IsIntegerValue(value))
+        {
+            result = value.AsInteger();
+            return true;
+        }
+
+        result = default;
+        return false;
+    }
+
+    private static RtonValue CloneInteger(RtonValue value) => new()
+    {
+        TypeCode = value.TypeCode,
+        Kind = value.Kind,
+        Data = value.Kind switch
+        {
+            RtonValueKind.SignedInteger => (long)value.Data,
+            RtonValueKind.UnsignedInteger => (ulong)value.Data,
+            _ => throw new InvalidDataException("A plant ownership entry must use an integer RTON type.")
+        }
+    };
 }
 
 internal sealed class PlantStatView
@@ -85,8 +164,25 @@ internal sealed class PlantStatView
     public required RtonObject Record { get; init; }
 
     public BigInteger PlantId => GetRequiredInteger("p");
+    public bool IsImitater => PlantId == new BigInteger(32);
+    public PlantDefinition? Definition =>
+        PlantCatalog.TryGet(PlantId, out PlantDefinition? definition) ? definition : null;
+    public bool HasCatalogData => Definition is not null;
+    public int? MaximumLevel => Definition?.MaximumLevel;
+    public bool SupportsMastery => Definition?.SupportsMastery ?? true;
+    public int? MaximumMastery => Definition?.MaximumMastery;
     public BigInteger? StoredLevel => GetInteger("l");
-    public BigInteger? Experience => GetInteger("x");
+    public BigInteger? VisibleLevel
+    {
+        get
+        {
+            // The save stores player-visible Level N as l = N - 1; fresh records may keep -1 but still start at Level 1.
+            BigInteger? storedLevel = StoredLevel;
+            return storedLevel is null ? null : BigInteger.Max(BigInteger.One, storedLevel.Value + BigInteger.One);
+        }
+    }
+
+    public BigInteger? SeedPackets => GetInteger("x");
     public BigInteger? Mastery => GetInteger("m");
 
     public BigInteger? GetInteger(string field)
@@ -99,9 +195,60 @@ internal sealed class PlantStatView
 
     public void SetInteger(string field, BigInteger value)
     {
+        if (IsImitater && field == "l")
+        {
+            throw new InvalidOperationException("Imitater has fixed Level 1 and does not support level edits.");
+        }
+
+        if (field == "m")
+        {
+            PlantDefinition? definition = Definition;
+            if (definition is not null && !definition.SupportsMastery)
+            {
+                throw new InvalidOperationException($"{definition.Name} does not support mastery progression.");
+            }
+
+            int maximumMastery = definition?.MaximumMastery ?? PlantCatalog.DefaultMaximumMastery;
+            if (value < 0 || value > maximumMastery)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(value),
+                    $"Mastery must be from 0 to {maximumMastery}.");
+            }
+        }
+
+        if (field == "x" && (value < 0 || value > PlantCatalog.MaximumSeedPackets))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                $"Seed Packets must be from 0 to {PlantCatalog.MaximumSeedPackets}.");
+        }
+
         RtonValue target = Record.FindValue(field)
             ?? throw new InvalidDataException($"Plant record field '{field}' is missing.");
         target.SetInteger(value);
+    }
+
+    public void SetVisibleLevel(BigInteger value)
+    {
+        if (IsImitater)
+        {
+            throw new InvalidOperationException("Imitater has fixed Level 1 and does not support level edits.");
+        }
+
+        if (value < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(value), "A player-visible plant level must be at least 1.");
+        }
+
+        if (Definition is PlantDefinition definition && value > definition.MaximumLevel)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                $"Level for {definition.Name} must be from 1 to {definition.MaximumLevel}.");
+        }
+
+        SetInteger("l", value - BigInteger.One);
     }
 
     private BigInteger GetRequiredInteger(string field) =>

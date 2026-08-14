@@ -23,40 +23,44 @@ internal sealed class TuiApp
 
     public static int Run(string? initialPath)
     {
-        if (Console.IsInputRedirected)
+        if (Console.IsInputRedirected || Console.IsOutputRedirected)
         {
-            Console.Error.WriteLine("The interactive TUI requires terminal input. Use --inspect or --self-test for non-interactive operation.");
+            Console.Error.WriteLine("The interactive TUI requires terminal input and output. Use --inspect or --self-test for non-interactive operation.");
             return 2;
         }
 
         // With no explicit path, prefer a nearby pp.dat for double-click workflows.
         string? path = initialPath is null ? FindAutomaticSavePath() : NormalizePath(initialPath);
-        if (string.IsNullOrWhiteSpace(path))
+        while (true)
         {
-            ConsoleUi.Clear();
-            ConsoleUi.WriteTitle("Zombies vs Plants 2 Save Editor");
-            path = ConsoleUi.PromptOptional("Enter the path to pp.dat, or drag the file into this window and press Enter");
-            path = NormalizePath(path);
-        }
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                ConsoleUi.Clear();
+                ConsoleUi.WriteTitle("Zombies vs Plants 2 Save Editor");
+                path = ConsoleUi.PromptOptional("Enter the path to pp.dat, or drag the file into this window and press Enter");
+                path = NormalizePath(path);
+            }
 
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return 0;
-        }
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return 0;
+            }
 
-        try
-        {
-            EditorSession session = EditorSession.Load(path);
-            return new TuiApp(session).RunLoop();
-        }
-        catch (Exception exception) when (exception is IOException
-            or UnauthorizedAccessException
-            or InvalidDataException
-            or ArgumentException
-            or NotSupportedException)
-        {
-            ConsoleUi.Error(exception.Message);
-            return 1;
+            try
+            {
+                EditorSession session = EditorSession.Load(path);
+                return new TuiApp(session).RunLoop();
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException
+                or InvalidDataException
+                or ArgumentException
+                or NotSupportedException
+                or OverflowException)
+            {
+                ConsoleUi.Error(exception.Message);
+                path = null;
+            }
         }
     }
 
@@ -162,9 +166,9 @@ internal sealed class TuiApp
             int batchPlantsIndex = items.Count;
             items.Add("Bulk edit all plant records");
             int browsePlantsIndex = items.Count;
-            items.Add("Browse and edit a plant record");
+            items.Add("Browse, unlock, and edit a plant record");
             int onePlantIndex = items.Count;
-            items.Add("Edit a record by plant ID");
+            items.Add("Unlock or edit a record by plant ID or English name");
             int advancedIndex = items.Count;
             items.Add("Search any field in this profile");
             int backIndex = items.Count;
@@ -278,18 +282,25 @@ internal sealed class TuiApp
         IReadOnlyList<PlantStatView> records = profile.GetPlantStats();
         if (records.Count == 0)
         {
-            ConsoleUi.Notice("This profile has no plis plant records.");
+            ConsoleUi.Notice("This profile has no plant progression records.");
             return;
         }
 
         ConsoleUi.Clear();
         ConsoleUi.WriteTitle($"Bulk Edit Plant Records: {profile.Name}");
-        Console.WriteLine($"This will apply to {records.Count} records. Values are raw save fields; level l may be zero-based in some versions.");
+        Console.WriteLine($"This will apply to {records.Count} records. Imitater Level and Mastery are skipped because its progression is fixed.");
+        Console.WriteLine("Levels are player-visible values. Each known plant is clamped to its catalog maximum.");
+        Console.WriteLine("Mastery is skipped for plants that do not support it; unknown plant IDs remain editable without per-plant catalog restrictions.");
         Console.WriteLine("Press Enter without typing to leave each field unchanged.");
-        BigInteger? level = PromptIntegerInRange("Raw level value (l)", null, -1, int.MaxValue, pauseOnError: false);
-        BigInteger? mastery = PromptSafeInteger("Mastery value (m)", null, pauseOnError: false);
-        BigInteger? experience = PromptSafeInteger("Experience/shard value (x)", null, pauseOnError: false);
-        if (level is null && mastery is null && experience is null)
+        BigInteger? level = PromptIntegerInRange("Player-visible Level", null, 1, int.MaxValue, pauseOnError: false);
+        BigInteger? mastery = PromptIntegerInRange("Mastery", null, 0, PlantCatalog.DefaultMaximumMastery, pauseOnError: false);
+        BigInteger? seedPackets = PromptIntegerInRange(
+            "Seed Packets (x)",
+            null,
+            BigInteger.Zero,
+            PlantCatalog.MaximumSeedPackets,
+            pauseOnError: false);
+        if (level is null && mastery is null && seedPackets is null)
         {
             return;
         }
@@ -305,23 +316,26 @@ internal sealed class TuiApp
                 foreach (PlantStatView record in GetProfile(document, objectIndex).GetPlantStats())
                 {
                     // Save variants may omit individual fields, so update only fields that exist.
-                    if (level is not null && record.GetInteger("l") is not null)
+                    if (!record.IsImitater && level is not null && record.GetInteger("l") is not null)
                     {
-                        record.SetInteger("l", level.Value);
+                        BigInteger targetLevel = record.MaximumLevel is int maximumLevel
+                            ? BigInteger.Min(level.Value, new BigInteger(maximumLevel))
+                            : level.Value;
+                        record.SetVisibleLevel(targetLevel);
                     }
 
-                    if (mastery is not null && record.GetInteger("m") is not null)
+                    if (!record.IsImitater && mastery is not null && record.SupportsMastery && record.GetInteger("m") is not null)
                     {
                         record.SetInteger("m", mastery.Value);
                     }
 
-                    if (experience is not null && record.GetInteger("x") is not null)
+                    if (seedPackets is not null && record.GetInteger("x") is not null)
                     {
-                        record.SetInteger("x", experience.Value);
+                        record.SetInteger("x", seedPackets.Value);
                     }
                 }
             },
-            $"Updated {records.Count} plant records.");
+            "Updated plant records using catalog-aware Level, Mastery, and Seed Packets limits.");
     }
 
     private void BrowsePlants(int objectIndex)
@@ -333,13 +347,26 @@ internal sealed class TuiApp
             IReadOnlyList<PlantStatView> records = profile.GetPlantStats();
             if (records.Count == 0)
             {
-                ConsoleUi.Notice("This profile has no plis plant records.");
+                ConsoleUi.Notice("This profile has no plant progression records.");
                 return;
             }
 
-            List<string> items = records.Select(record =>
-                $"ID {record.PlantId,-6} | Level {record.StoredLevel?.ToString() ?? "—",-6} | "
-                + $"Mastery {record.Mastery?.ToString() ?? "—",-8} | Experience/Shards {record.Experience?.ToString() ?? "—"}").ToList();
+            // Display order is independent from the raw plis index used for edits.
+            IReadOnlyList<PlantStatView> displayRecords = records
+                .OrderBy(record => PlantCatalog.DisplayName(record.PlantId), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(record => record.PlantId)
+                .ThenBy(record => record.Index)
+                .ToList();
+            List<string> items = displayRecords.Select(record =>
+            {
+                bool unlocked = profile.IsPlantUnlocked(record.PlantId);
+                string ownership = unlocked ? "Unlocked" : "Locked";
+                string catalogStatus = record.HasCatalogData ? string.Empty : " | Catalog data unavailable";
+                return $"{FormatPlantName(record.PlantId)} | {ownership,-8} | "
+                    + $"Level {FormatPlantLevel(record),-12} | "
+                    + $"Mastery {FormatPlantMastery(record),-8} | "
+                    + $"Seed Packets {record.SeedPackets?.ToString() ?? "—"}{catalogStatus}";
+            }).ToList();
             int backIndex = items.Count;
             items.Add("Back");
             selection = Math.Clamp(selection, 0, items.Count - 1);
@@ -355,7 +382,7 @@ internal sealed class TuiApp
 
             selection = selected;
             // Record.Index is the raw plis array index and remains stable across scalar edits.
-            PlantStatView record = records[selected];
+            PlantStatView record = displayRecords[selected];
             EditPlantRecord(objectIndex, record.Index, record.PlantId);
         }
     }
@@ -363,23 +390,37 @@ internal sealed class TuiApp
     private void EditOnePlant(int objectIndex)
     {
         ProfileView profile = GetProfile(objectIndex);
-        string? input = ConsoleUi.PromptOptional("Enter the plant ID (p)");
+        string? input = ConsoleUi.PromptOptional("Enter a plant ID (p) or English name");
         if (input is null)
         {
             return;
         }
 
-        if (!BigInteger.TryParse(input, NumberStyles.Integer, CultureInfo.InvariantCulture, out BigInteger plantId)
-            || plantId < 0)
+        IReadOnlyList<PlantStatView> records = profile.GetPlantStats();
+        IReadOnlyList<PlantStatView> matches;
+        if (BigInteger.TryParse(input, NumberStyles.Integer, CultureInfo.InvariantCulture, out BigInteger requestedPlantId))
         {
-            ConsoleUi.Error("The plant ID must be a non-negative integer.");
-            return;
+            if (requestedPlantId < 0)
+            {
+                ConsoleUi.Error("The plant ID must be a non-negative integer.");
+                return;
+            }
+
+            matches = records.Where(record => record.PlantId == requestedPlantId).ToList();
+        }
+        else
+        {
+            string query = input.Trim();
+            matches = records
+                .Where(record => PlantCatalog.DisplayName(record.PlantId).Contains(query, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(record => PlantCatalog.DisplayName(record.PlantId), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(record => record.PlantId)
+                .ToList();
         }
 
-        IReadOnlyList<PlantStatView> matches = profile.GetPlantStats().Where(record => record.PlantId == plantId).ToList();
         if (matches.Count == 0)
         {
-            ConsoleUi.Notice($"Plant ID {plantId} was not found in this profile.");
+            ConsoleUi.Notice($"No plant record matched '{input}'.");
             return;
         }
 
@@ -391,8 +432,11 @@ internal sealed class TuiApp
         else
         {
             int selected = ConsoleUi.Select(
-                $"Found {matches.Count} records with the same ID",
-                matches.Select(record => $"Record index {record.Index} | l={record.StoredLevel} | m={record.Mastery} | x={record.Experience}").ToList());
+                $"Found {matches.Count} matching records",
+                matches.Select(record =>
+                    $"{FormatPlantName(record.PlantId)} | Record index {record.Index} | "
+                    + $"Level={FormatPlantLevel(record)} | Mastery={FormatPlantMastery(record)} | "
+                    + $"Seed Packets (x)={record.SeedPackets}").ToList());
             if (selected < 0)
             {
                 return;
@@ -401,6 +445,7 @@ internal sealed class TuiApp
             selectedRecord = matches[selected];
         }
 
+        BigInteger plantId = selectedRecord.PlantId;
         EditPlantRecord(objectIndex, selectedRecord.Index, plantId);
     }
 
@@ -409,41 +454,128 @@ internal sealed class TuiApp
         int selection = 0;
         while (true)
         {
-            PlantStatView record = GetProfile(objectIndex).GetPlantStats().First(item => item.Index == recordIndex);
-            IReadOnlyList<string> items =
+            ProfileView profile = GetProfile(objectIndex);
+            PlantStatView record = profile.GetPlantStats().First(item => item.Index == recordIndex);
+            bool unlocked = profile.IsPlantUnlocked(plantId);
+            string levelDisplay = FormatPlantLevel(record);
+            string levelItem = record.IsImitater
+                ? "Level: 1 (fixed for Imitater)"
+                : record.MaximumLevel is int maximumLevel
+                    ? $"Edit Level, current: {levelDisplay} (max {maximumLevel})"
+                    : $"Edit Level, current: {levelDisplay} (catalog data unavailable)";
+            string masteryItem = !record.SupportsMastery
+                ? "Mastery: N/A (not supported)"
+                : record.MaximumMastery is int maximumMastery
+                    ? $"Edit Mastery, current: {record.Mastery} (max {maximumMastery})"
+                    : $"Edit Mastery, current: {record.Mastery} (catalog data unavailable; max 200)";
+            List<string> items =
             [
-                $"Edit raw level value (l), current: {record.StoredLevel}",
-                $"Edit mastery value (m), current: {record.Mastery}",
-                $"Edit experience/shard value (x), current: {record.Experience}",
-                "Back"
+                levelItem,
+                masteryItem,
+                $"Edit Seed Packets (x), current: {record.SeedPackets} (max {PlantCatalog.MaximumSeedPackets:N0})"
             ];
+            int unlockIndex = items.Count;
+            items.Add(unlocked ? "Plant ownership: Unlocked" : "Unlock this plant");
+            int backIndex = items.Count;
+            items.Add("Back");
             int selected = ConsoleUi.Select(
-                $"Plant ID {plantId} | Record Index {recordIndex}",
+                $"{FormatPlantName(plantId)} | Record Index {recordIndex}",
                 items,
-                ["Values are shown as stored; no level offset is applied."],
+                [
+                    $"Ownership: {(unlocked ? "Unlocked" : "Locked")} | Level: {levelDisplay} | Mastery: {FormatPlantMastery(record)}",
+                    FormatPlantCatalogStatus(record)
+                ],
                 initialSelection: selection);
-            if (selected < 0 || selected == 3)
+            if (selected < 0 || selected == backIndex)
             {
                 return;
             }
 
             selection = selected;
+            if (selected == unlockIndex)
+            {
+                if (unlocked)
+                {
+                    ConsoleUi.Notice("This plant is already unlocked.");
+                    continue;
+                }
+
+                if (!ConsoleUi.Confirm($"Unlock {FormatPlantName(plantId)}?"))
+                {
+                    continue;
+                }
+
+                ApplyChange(
+                    document =>
+                    {
+                        _ = GetProfile(document, objectIndex).UnlockPlant(plantId);
+                    },
+                    $"{FormatPlantName(plantId)} was unlocked. Level, mastery, and Seed Packets were left unchanged.");
+                continue;
+            }
+
+            if (record.IsImitater && selected == 0)
+            {
+                ConsoleUi.Notice("Imitater has fixed Level 1 and does not support level edits.");
+                continue;
+            }
+
+            if (!record.SupportsMastery && selected == 1)
+            {
+                ConsoleUi.Notice($"{PlantCatalog.DisplayName(plantId)} does not support mastery progression.");
+                continue;
+            }
+
             string field = selected switch { 0 => "l", 1 => "m", _ => "x" };
-            string label = selected switch { 0 => "raw level value", 1 => "mastery value", _ => "experience/shard value" };
-            string current = record.GetInteger(field)?.ToString(CultureInfo.InvariantCulture) ?? "—";
-            BigInteger? value = selected == 0
-                ? PromptIntegerInRange($"Enter the new {label}", current, -1, int.MaxValue)
-                : PromptSafeInteger($"Enter the new {label}", current);
+            string label = selected switch { 0 => "Level", 1 => "Mastery", _ => "Seed Packets" };
+            BigInteger? currentValue = record.GetInteger(field);
+            if (currentValue is null)
+            {
+                ConsoleUi.Notice($"This plant record does not contain field '{field}'.");
+                continue;
+            }
+
+            string current = selected == 0
+                ? record.VisibleLevel?.ToString(CultureInfo.InvariantCulture) ?? "1"
+                : currentValue.Value.ToString(CultureInfo.InvariantCulture);
+            BigInteger? value = selected switch
+            {
+                0 => PromptIntegerInRange(
+                    "Enter the new player-visible Level",
+                    current,
+                    1,
+                    record.MaximumLevel ?? int.MaxValue),
+                1 => PromptIntegerInRange(
+                    "Enter the new Mastery",
+                    current,
+                    0,
+                    record.MaximumMastery ?? PlantCatalog.DefaultMaximumMastery),
+                _ => PromptIntegerInRange(
+                    "Enter the new Seed Packets",
+                    current,
+                    BigInteger.Zero,
+                    PlantCatalog.MaximumSeedPackets)
+            };
             if (value is null)
             {
                 continue;
             }
 
             ApplyChange(
-                document => GetProfile(document, objectIndex).GetPlantStats()
-                    .First(item => item.Index == recordIndex)
-                    .SetInteger(field, value.Value),
-                $"Plant ID {plantId}: {label} was set to {value.Value:N0}.");
+                document =>
+                {
+                    PlantStatView currentRecord = GetProfile(document, objectIndex).GetPlantStats()
+                        .First(item => item.Index == recordIndex);
+                    if (selected == 0)
+                    {
+                        currentRecord.SetVisibleLevel(value.Value);
+                    }
+                    else
+                    {
+                        currentRecord.SetInteger(field, value.Value);
+                    }
+                },
+                $"{FormatPlantName(plantId)}: {label} was set to {value.Value:N0}.");
         }
     }
 
@@ -463,7 +595,7 @@ internal sealed class TuiApp
         }
 
         List<string> items = results.Select(result =>
-            $"{(result.Value.IsEditable ? "[Editable]" : "[Read-only]")} {result.Path} = {result.Value.ToDisplayString(70)}").ToList();
+            $"{(IsAdvancedScalarEditable(result) ? "[Editable]" : "[Read-only]")} {result.Path} = {result.Value.ToDisplayString(70)}").ToList();
         int selected = ConsoleUi.Select(
             title,
             items,
@@ -474,9 +606,12 @@ internal sealed class TuiApp
         }
 
         ScalarReference scalar = results[selected];
-        if (!scalar.Value.IsEditable)
+        if (!IsAdvancedScalarEditable(scalar))
         {
-            ConsoleUi.Notice($"{scalar.Path} uses special RTON type 0x{scalar.Value.TypeCode:X2}. It is read-only to protect the file structure.");
+            string reason = IsProtectedPlantPath(scalar.Path)
+                ? "It is managed by the plant editor so ownership and progression limits stay consistent; use the plant browser instead."
+                : $"It uses special RTON type 0x{scalar.Value.TypeCode:X2}.";
+            ConsoleUi.Notice($"{scalar.Path} is read-only. {reason}");
             return;
         }
 
@@ -561,6 +696,40 @@ internal sealed class TuiApp
         }
     }
 
+    private static bool IsAdvancedScalarEditable(ScalarReference scalar) =>
+        scalar.Value.IsEditable && !IsProtectedPlantPath(scalar.Path);
+
+    internal static bool IsProtectedPlantPath(string path)
+    {
+        const string marker = ".objdata.";
+        int markerIndex = path.IndexOf(marker, StringComparison.Ordinal);
+        if (markerIndex < 0)
+        {
+            return false;
+        }
+
+        string relativePath = path[(markerIndex + marker.Length)..];
+        if (relativePath.StartsWith("p[", StringComparison.Ordinal)
+            && relativePath.EndsWith(']')
+            && !relativePath.Contains('.'))
+        {
+            return true;
+        }
+
+        if ((relativePath.StartsWith("pli[", StringComparison.Ordinal)
+                || relativePath.StartsWith("tltep[", StringComparison.Ordinal))
+            && relativePath.EndsWith(".p", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return relativePath.StartsWith("plis[", StringComparison.Ordinal)
+            && (relativePath.EndsWith(".p", StringComparison.Ordinal)
+                || relativePath.EndsWith(".l", StringComparison.Ordinal)
+                || relativePath.EndsWith(".m", StringComparison.Ordinal)
+                || relativePath.EndsWith(".x", StringComparison.Ordinal));
+    }
+
     private void SaveCurrent()
     {
         try
@@ -578,7 +747,8 @@ internal sealed class TuiApp
             or UnauthorizedAccessException
             or InvalidDataException
             or ArgumentException
-            or NotSupportedException)
+            or NotSupportedException
+            or OverflowException)
         {
             ConsoleUi.Error(exception.Message);
         }
@@ -607,7 +777,8 @@ internal sealed class TuiApp
             or UnauthorizedAccessException
             or InvalidDataException
             or ArgumentException
-            or NotSupportedException)
+            or NotSupportedException
+            or OverflowException)
         {
             ConsoleUi.Error(exception.Message);
         }
@@ -617,7 +788,9 @@ internal sealed class TuiApp
     {
         string directory = Path.GetDirectoryName(_session.Path) ?? Environment.CurrentDirectory;
         string suggested = Path.Combine(directory, "pp.edited.dat");
-        string? path = ConsoleUi.PromptOptional("Enter the Save As path", suggested);
+        string? path = ConsoleUi.PromptWithDefault(
+            "Enter the Save As path (relative paths use the current save directory)",
+            suggested);
         path = NormalizePath(path);
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -626,6 +799,14 @@ internal sealed class TuiApp
 
         try
         {
+            path = Path.IsPathFullyQualified(path)
+                ? Path.GetFullPath(path)
+                : Path.GetFullPath(path, directory);
+            if (Directory.Exists(path))
+            {
+                throw new ArgumentException("The Save As path must include a file name, not a directory.");
+            }
+
             bool exists = File.Exists(path);
             if (exists && !ConsoleUi.Confirm("The target file already exists. Back it up and overwrite it?"))
             {
@@ -645,7 +826,8 @@ internal sealed class TuiApp
             or UnauthorizedAccessException
             or InvalidDataException
             or ArgumentException
-            or NotSupportedException)
+            or NotSupportedException
+            or OverflowException)
         {
             ConsoleUi.Error(exception.Message);
         }
@@ -667,7 +849,8 @@ internal sealed class TuiApp
             or UnauthorizedAccessException
             or InvalidDataException
             or ArgumentException
-            or NotSupportedException)
+            or NotSupportedException
+            or OverflowException)
         {
             ConsoleUi.Error(exception.Message);
         }
@@ -704,9 +887,9 @@ internal sealed class TuiApp
             $"{field.Label} {profile.GetInteger(field.Field)?.ToString("N0", CultureInfo.InvariantCulture) ?? "—"}"));
         return
         [
-            $"Name: {profile.Name} | Label: {profile.LoginLabel ?? "—"}",
+            $"Name: {profile.Name} | Activity (l): {profile.ActivityLabel ?? "—"}",
             resources,
-            $"Plants: {profile.PliEntryCount} pli entries | {profile.PlantStatCount} plis level/mastery records"
+            $"Plants: {profile.UnlockedPlantCount} unlocked | {profile.PlantStatCount} progression records | {profile.PliEntryCount} auxiliary entries"
         ];
     }
 
@@ -714,7 +897,37 @@ internal sealed class TuiApp
     {
         string coins = profile.GetInteger("c")?.ToString("N0", CultureInfo.InvariantCulture) ?? "—";
         string gems = profile.GetInteger("g")?.ToString("N0", CultureInfo.InvariantCulture) ?? "—";
-        return $"#{profile.Index + 1,-2} {ConsoleUi.Truncate(profile.Name, 34),-34} | Coins {coins} | Gems {gems} | Plants {profile.PlantStatCount}";
+        return $"#{profile.Index + 1,-2} {ConsoleUi.Truncate(profile.Name, 34),-34} | Coins {coins} | Gems {gems} | Unlocked {profile.UnlockedPlantCount} | Records {profile.PlantStatCount}";
+    }
+
+    private static string FormatPlantName(BigInteger plantId) =>
+        $"{PlantCatalog.DisplayName(plantId)} (ID {plantId.ToString(CultureInfo.InvariantCulture)})";
+
+    private static string FormatPlantLevel(PlantStatView record)
+    {
+        if (record.IsImitater)
+        {
+            return "1";
+        }
+
+        return record.VisibleLevel?.ToString(CultureInfo.InvariantCulture) ?? "—";
+    }
+
+    private static string FormatPlantMastery(PlantStatView record) => !record.SupportsMastery
+        ? "N/A"
+        : record.Mastery?.ToString(CultureInfo.InvariantCulture) ?? "—";
+
+    private static string FormatPlantCatalogStatus(PlantStatView record)
+    {
+        if (record.Definition is not PlantDefinition definition)
+        {
+            return "Catalog data unavailable for this plant ID; Level and Mastery remain editable with generic limits.";
+        }
+
+        string mastery = definition.SupportsMastery
+            ? definition.MaximumMastery.ToString(CultureInfo.InvariantCulture)
+            : "N/A";
+        return $"Catalog limits: Level {definition.MaximumLevel} | Mastery {mastery}";
     }
 
     private static BigInteger? PromptSafeInteger(
@@ -730,31 +943,32 @@ internal sealed class TuiApp
         BigInteger maximum,
         bool pauseOnError = true)
     {
-        string? input = ConsoleUi.PromptOptional(
-            prompt + $" (allowed: {minimum.ToString("N0", CultureInfo.InvariantCulture)} to {maximum.ToString("N0", CultureInfo.InvariantCulture)})",
-            current);
-        if (input is null)
+        while (true)
         {
-            return null;
-        }
+            string? input = ConsoleUi.PromptOptional(
+                prompt + $" (allowed: {minimum.ToString("N0", CultureInfo.InvariantCulture)} to {maximum.ToString("N0", CultureInfo.InvariantCulture)})",
+                current);
+            if (input is null)
+            {
+                return null;
+            }
 
-        if (!BigInteger.TryParse(input.Replace(",", string.Empty, StringComparison.Ordinal), NumberStyles.Integer, CultureInfo.InvariantCulture, out BigInteger value)
-            || value < minimum
-            || value > maximum)
-        {
+            if (BigInteger.TryParse(input.Replace(",", string.Empty, StringComparison.Ordinal), NumberStyles.Integer, CultureInfo.InvariantCulture, out BigInteger value)
+                && value >= minimum
+                && value <= maximum)
+            {
+                return value;
+            }
+
             if (pauseOnError)
             {
                 ConsoleUi.Error($"Enter an integer from {minimum:N0} to {maximum:N0}.");
             }
             else
             {
-                Console.WriteLine("Invalid input; this field will remain unchanged.");
+                Console.WriteLine("Invalid input; try again or press Enter to leave this field unchanged.");
             }
-
-            return null;
         }
-
-        return value;
     }
 
     private static string? FindAutomaticSavePath()

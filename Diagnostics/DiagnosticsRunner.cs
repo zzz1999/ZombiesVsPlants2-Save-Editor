@@ -85,7 +85,7 @@ internal static class DiagnosticsRunner
         string editedName = first.Name + " self-test ✓";
         first.SetString("n", editedName);
 
-        PlantStatView? plant = first.GetPlantStats().FirstOrDefault();
+        PlantStatView? plant = first.GetPlantStats().FirstOrDefault(record => !record.IsImitater);
         BigInteger? editedLevel = null;
         if (plant?.StoredLevel is BigInteger originalLevel)
         {
@@ -124,7 +124,8 @@ internal static class DiagnosticsRunner
         Pass("The source file remains unchanged");
 
         RunCodecBoundaryTests();
-        Pass("Latin-1, Unicode, binary, floating-point bit patterns, array capacity, and invalid VarInt boundaries pass");
+        EditorRegressionFixtures.Run();
+        Pass("Codec boundaries, plant catalog limits, and ownership edits pass");
 
         string temporaryRoot = Path.Combine(Path.GetTempPath(), $"ZvpEditorSelfTest-{Guid.NewGuid():N}");
         Directory.CreateDirectory(temporaryRoot);
@@ -171,45 +172,32 @@ internal static class DiagnosticsRunner
             Directory.Delete(temporaryRoot, recursive: true);
         }
 
+        SaveRegressionFixtures.Run(source);
+        Pass("Save race detection, rollback, backup accuracy, and temporary-file cleanup pass");
+
         Console.WriteLine("[PASS] All self-tests passed");
+        return 0;
+    }
+
+    public static int FixtureTest()
+    {
+        RunCodecBoundaryTests();
+        EditorRegressionFixtures.Run();
+        SaveRegressionFixtures.Run();
+        Pass("All synthetic codec, editor, and save fixtures passed");
         return 0;
     }
 
     private static void RunCodecBoundaryTests()
     {
         // Synthetic wire fixtures cover encodings that ordinary save samples may not contain.
-        byte[] latin1 = WrapRootPayload(0x81, 0x01, (byte)'x', 0x81, 0x01, 0xE9, 0xFF);
-        Require(RoundTripsExactly(latin1), "A Latin-1 single-byte string must round-trip byte-for-byte");
-        Require(RtonCodec.Decode(latin1).Root.FindValue("x")?.AsString() == "é", "A Latin-1 character must decode correctly");
-
-        byte[] pooledString = WrapRootPayload(
-            0x81, 0x01, (byte)'n',
-            0x90, 0x03, (byte)'a', (byte)'b', (byte)'c',
-            0xFF);
-        RtonDocument stringDocument = RtonCodec.Decode(pooledString);
-        RtonValue stringValue = stringDocument.Root.FindValue("n")
-            ?? throw new InvalidDataException("The synthetic string fixture is missing field 'n'");
-        stringValue.SetString("Ωλ😀");
-        Require(stringValue.TypeCode == 0x92, "A pooled string outside Latin-1 must be promoted to a UTF-8 type");
-        RtonValue decodedStringValue = RtonCodec.Decode(RtonCodec.Encode(stringDocument)).Root.FindValue("n")
-            ?? throw new InvalidDataException("The decoded Unicode fixture is missing field 'n'");
-        RtonStringToken decodedStringToken = (RtonStringToken)decodedStringValue.Data;
-        Require(decodedStringValue.AsString() == "Ωλ😀", "A Unicode string must decode correctly after editing");
-        Require(decodedStringToken.DeclaredCharacterLength == 3, "An emoji must count as one Unicode scalar");
+        RtonRegressionFixtures.Run();
 
         byte[] signalingNan = WrapRootPayload(
             0x81, 0x01, (byte)'f',
             0x22, 0x01, 0x00, 0x80, 0x7F,
             0xFF);
         Require(RoundTripsExactly(signalingNan), "An f32 signaling-NaN bit pattern must be preserved byte-for-byte");
-
-        byte[] binary = WrapRootPayload(
-            0x81, 0x01, (byte)'b',
-            0x87, 0x00,
-            0x06, (byte)'0', (byte)'1', (byte)'0', (byte)'2', (byte)'0', (byte)'3',
-            0x03, 0x01, 0x02, 0x03,
-            0xFF);
-        Require(RoundTripsExactly(binary), "A BinaryBlob payload must be fully consumed and preserved byte-for-byte");
 
         byte[] earlyArrayEnd = WrapRootPayload(
             0x81, 0x01, (byte)'a',
@@ -256,12 +244,6 @@ internal static class DiagnosticsRunner
             0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02,
             0xFF);
         RequireDecodeRejected(overflowingVarUInt64, "An overflowing 64-bit VarInt must be rejected");
-
-        byte[] compactBooleanInStandardFile = WrapRootPayload(
-            0x81, 0x01, (byte)'v',
-            0xBC, 0x02,
-            0xFF);
-        RequireDecodeRejected(compactBooleanInStandardFile, "A compact type in a standard v1 file must be rejected");
 
         List<byte> tooDeepPayload = [];
         for (int depth = 0; depth < 128; depth++)

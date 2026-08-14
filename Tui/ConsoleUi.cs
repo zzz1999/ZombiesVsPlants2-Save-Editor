@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace ZombiesVsPlants2.SaveEditor.Tui;
 
 internal static class ConsoleUi
@@ -16,9 +18,10 @@ internal static class ConsoleUi
 
     public static void WriteTitle(string title)
     {
-        WriteColored(title, ConsoleColor.Cyan);
+        int availableWidth = Math.Max(1, GetWidth() - 1);
+        WriteColored(Truncate(title, availableWidth), ConsoleColor.Cyan);
         Console.WriteLine();
-        WriteColored(new string('─', Math.Min(GetWidth() - 1, Math.Max(20, title.Length + 8))), ConsoleColor.DarkGray);
+        WriteColored(new string('─', Math.Min(availableWidth, Math.Max(1, title.Length + 8))), ConsoleColor.DarkGray);
         Console.WriteLine();
     }
 
@@ -41,7 +44,7 @@ internal static class ConsoleUi
         {
             int height = GetHeight();
             int headerCount = headerLines?.Count ?? 0;
-            int visibleCount = Math.Max(4, height - headerCount - 8);
+            int visibleCount = Math.Max(1, height - headerCount - 8);
             if (selected < scroll)
             {
                 scroll = selected;
@@ -140,6 +143,29 @@ internal static class ConsoleUi
         return value == "\"\"" ? string.Empty : value;
     }
 
+    public static string? PromptWithDefault(string prompt, string defaultValue)
+    {
+        Console.WriteLine();
+        WriteColored(prompt, ConsoleColor.Cyan);
+        Console.WriteLine();
+        WriteColored($"Default: {defaultValue}", ConsoleColor.DarkGray);
+        Console.WriteLine();
+        WriteColored("Press Enter to use the default; type /cancel to cancel: ", ConsoleColor.DarkGray);
+        string? value = Console.ReadLine();
+        if (value is null)
+        {
+            return null;
+        }
+
+        string trimmed = value.Trim();
+        if (trimmed.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return trimmed.Length == 0 ? defaultValue : trimmed;
+    }
+
     public static bool Confirm(string question, bool defaultAnswer = false)
     {
         WriteColored($"{question} {(defaultAnswer ? "[Y/n]" : "[y/N]")} ", ConsoleColor.Yellow);
@@ -193,13 +219,22 @@ internal static class ConsoleUi
             return string.Empty;
         }
 
-        return value.Length <= maximumLength
-            ? value
-            : value[..Math.Max(0, maximumLength - 1)] + "…";
+        List<Rune> runes = value.EnumerateRunes().ToList();
+        if (runes.Count <= maximumLength)
+        {
+            return value;
+        }
+
+        if (maximumLength == 1)
+        {
+            return "…";
+        }
+
+        return string.Concat(runes.Take(maximumLength - 1).Select(rune => rune.ToString())) + "…";
     }
 
     private static void WriteTruncated(string value, ConsoleColor color, int reservedColumns = 0) =>
-        WriteColored(Truncate(value, Math.Max(10, GetWidth() - reservedColumns - 1)), color);
+        WriteColored(Truncate(value, Math.Max(1, GetWidth() - reservedColumns - 1)), color);
 
     private static void WriteColored(string value, ConsoleColor color)
     {
@@ -219,7 +254,7 @@ internal static class ConsoleUi
     {
         try
         {
-            return Math.Max(40, Console.WindowWidth);
+            return Math.Max(1, Console.WindowWidth);
         }
         catch (IOException)
         {
@@ -231,7 +266,7 @@ internal static class ConsoleUi
     {
         try
         {
-            return Math.Max(16, Console.WindowHeight);
+            return Math.Max(1, Console.WindowHeight);
         }
         catch (IOException)
         {

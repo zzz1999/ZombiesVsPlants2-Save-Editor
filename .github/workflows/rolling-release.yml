@@ -21,12 +21,12 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
 
@@ -35,6 +35,9 @@ jobs:
 
       - name: Build
         run: dotnet build .\ZombiesVsPlants2SaveEditor.csproj -c Release --no-restore
+
+      - name: Run synthetic regression fixtures
+        run: dotnet run --project .\ZombiesVsPlants2SaveEditor.csproj -c Release --no-build -- --fixture-test
 
       - name: Publish self-contained single-file executable
         run: >-

@@ -72,6 +72,7 @@ internal sealed class RtonValue
     public required byte TypeCode { get; set; }
     public required RtonValueKind Kind { get; set; }
     public required object Data { get; set; }
+    public byte? OriginalBooleanPayload { get; set; }
     public ulong? OriginalFloatingPointBits { get; set; }
 
     public bool IsEditable => Kind is RtonValueKind.Boolean
@@ -128,10 +129,16 @@ internal sealed class RtonValue
             throw new InvalidOperationException("The field is not a Boolean value.");
         }
 
+        bool previous = (bool)Data;
         Data = value;
         if (TypeCode is 0x00 or 0x01)
         {
             TypeCode = value ? (byte)0x01 : (byte)0x00;
+        }
+        else if (TypeCode == 0xBC && previous != value)
+        {
+            // A changed extended Boolean is written canonically; unchanged non-zero payloads remain byte-exact.
+            OriginalBooleanPayload = null;
         }
     }
 
@@ -148,9 +155,14 @@ internal sealed class RtonValue
             throw new InvalidOperationException("This special string type is read-only.");
         }
 
+        if (string.Equals(token.Text, value, StringComparison.Ordinal))
+        {
+            return;
+        }
+
         token.Text = value;
-        // Latin-1 tags cannot represent arbitrary Unicode, so edited tokens must move to UTF-8 tags.
-        if (!IsLatin1(value))
+        // Single-byte string tags are reserved for ASCII; edited non-ASCII text must use UTF-8 tags.
+        if (!IsAscii(value))
         {
             token.TypeCode = token.TypeCode switch
             {
@@ -309,5 +321,5 @@ internal sealed class RtonValue
         return true;
     }
 
-    private static bool IsLatin1(string value) => value.All(character => character <= '\u00FF');
+    private static bool IsAscii(string value) => value.All(character => character <= '\u007F');
 }

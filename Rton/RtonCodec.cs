@@ -197,7 +197,8 @@ internal static class RtonCodec
                     Value(type, RtonValueKind.Special, ReadStringToken(type)),
                 0x85 => Value(type, RtonValueKind.Object, ReadObject(parentDepth + 1)),
                 0x86 => Value(type, RtonValueKind.Array, ReadArray(parentDepth + 1)),
-                >= 0xB0 and <= 0xBC => throw Error($"Compact RTON type 0x{type:X2} is not supported in standard version 1 files"),
+                0xBC => ReadExtendedBooleanValue(type),
+                >= 0xB0 and <= 0xBB => throw Error($"Compact RTON type 0x{type:X2} is not supported in standard version 1 files"),
                 _ => throw Error($"Unknown RTON value type 0x{type:X2}")
             };
         }
@@ -292,7 +293,7 @@ internal static class RtonCodec
             ulong value2 = ReadVarUInt64();
             ulong value1 = ReadVarUInt64();
             uint hexadecimal = ReadUInt32();
-            return $"RTID({value1:x}.{value2:x}.{hexadecimal:x8}@{nameSpace})";
+            return $"RTID({value1.ToString(CultureInfo.InvariantCulture)}.{value2.ToString(CultureInfo.InvariantCulture)}.{hexadecimal:x8}@{nameSpace})";
         }
 
         private string ReadRtidNamed()
@@ -308,8 +309,19 @@ internal static class RtonCodec
             byte subtype = ReadByte();
             string encoded = ReadLengthPrefixedLatin1();
             int length = ReadLength();
-            _ = ReadSpan(length);
             return $"$BINARY(\"{encoded}\", {length}; subtype={subtype})";
+        }
+
+        private RtonValue ReadExtendedBooleanValue(byte type)
+        {
+            byte payload = ReadByte();
+            return new RtonValue
+            {
+                TypeCode = type,
+                Kind = RtonValueKind.Boolean,
+                Data = payload != 0,
+                OriginalBooleanPayload = payload
+            };
         }
 
         private RtonValue ReadSingleValue(byte type)
@@ -581,6 +593,14 @@ internal static class RtonCodec
                 case 0x00:
                 case 0x01:
                     break;
+                case 0xBC:
+                    bool boolean = (bool)value.Data;
+                    byte payload = value.OriginalBooleanPayload is byte original
+                        && (original != 0) == boolean
+                            ? original
+                            : boolean ? (byte)1 : (byte)0;
+                    WriteByte(payload);
+                    break;
                 case 0x08:
                     WriteByte(unchecked((byte)checked((sbyte)(long)value.Data)));
                     break;
@@ -768,7 +788,8 @@ internal static class RtonCodec
 
         private static void UpgradeStringTokenIfNeeded(RtonStringToken token)
         {
-            if (IsLatin1(token.Text))
+            if (IsAscii(token.Text)
+                || string.Equals(token.Text, token.OriginalText, StringComparison.Ordinal))
             {
                 return;
             }
@@ -782,13 +803,15 @@ internal static class RtonCodec
             };
         }
 
-        private static bool IsLatin1(string value) => value.All(character => character <= '\u00FF');
+        private static bool IsAscii(string value) => value.All(character => character <= '\u007F');
+
+        private static bool IsSingleByte(string value) => value.All(character => character <= '\u00FF');
 
         private static int GetUnicodeScalarCount(string value) => value.EnumerateRunes().Count();
 
         private void WriteLengthPrefixedLatin1(string value)
         {
-            if (!IsLatin1(value))
+            if (!IsSingleByte(value))
             {
                 throw new InvalidDataException("The Latin-1 RTON string contains characters that cannot be encoded.");
             }
