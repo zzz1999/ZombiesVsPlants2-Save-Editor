@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>ZombiesVsPlants2.SaveEditor</AssemblyName>
+    <RootNamespace>ZombiesVsPlants2.SaveEditor</RootNamespace>
+    <Product>Zombies vs Plants 2 Save Editor</Product>
+    <Description>Terminal user interface for editing standard RTON v1 pp.dat save files.</Description>
+    <Version>1.0.0</Version>
+    <DebugType>embedded</DebugType>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+</Project>
