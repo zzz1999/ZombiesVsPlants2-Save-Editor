@@ -276,6 +276,13 @@ internal static class SaveDataNavigator
             }
 
             RtonObject container = item.AsObject();
+            RtonValue? classValue = container.FindValue("objclass");
+            if (classValue?.Kind != RtonValueKind.String
+                || !string.Equals(classValue.AsString(), "PlayerInfo", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             RtonValue? dataValue = container.FindValue("objdata");
             if (dataValue?.Kind != RtonValueKind.Object)
             {

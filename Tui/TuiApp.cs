@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Numerics;
+using System.Text;
 using ZombiesVsPlants2.SaveEditor.Editor;
 using ZombiesVsPlants2.SaveEditor.Rton;
 
@@ -37,7 +38,7 @@ internal sealed class TuiApp
             {
                 ConsoleUi.Clear();
                 ConsoleUi.WriteTitle("Zombies vs Plants 2 Save Editor");
-                path = ConsoleUi.PromptOptional("Enter the path to pp.dat, or drag the file into this window and press Enter");
+                path = ConsoleUi.PromptOptional("Enter the path to an RTON file, or drag the file into this window and press Enter");
                 path = NormalizePath(path);
             }
 
@@ -70,12 +71,14 @@ internal sealed class TuiApp
         {
             IReadOnlyList<ProfileView> profiles = SaveDataNavigator.GetProfiles(_session.Document);
             List<string> items = profiles.Select(FormatProfileMenuItem).ToList();
+            int rtonBrowserIndex = items.Count;
+            items.Add("[RTON Browser] Browse objects and arrays, rename keys, and edit scalar values");
             int openIndex = items.Count;
-            items.Add("[Open] Load another pp.dat file");
+            items.Add("[Open] Load another RTON file");
             int saveIndex = items.Count;
             items.Add("[Save] Overwrite the current file and create a timestamped backup");
             int saveAsIndex = items.Count;
-            items.Add("[Save As] Write to a new pp.dat file");
+            items.Add("[Save As] Write to a new RTON file");
             int advancedIndex = items.Count;
             items.Add("[Advanced] Search and edit any scalar field");
             int undoIndex = items.Count;
@@ -89,7 +92,9 @@ internal sealed class TuiApp
             [
                 $"File: {_session.Path}",
                 $"Status: {(_session.IsDirty ? "unsaved changes" : "saved")} | {_session.CurrentByteLength:N0} bytes | SHA-256 {_session.CurrentSha256[..16]}...",
-                $"Structure: RTON v{_session.Document.Version} | {profiles.Count} profiles | {_session.Document.Metadata.ObjectCount:N0} objects"
+                $"Structure: RTON v{_session.Document.Version} | {profiles.Count} profiles | "
+                    + $"{_session.Document.Metadata.ObjectCount:N0} objects | {_session.Document.Metadata.ArrayCount:N0} arrays | "
+                    + $"depth {_session.Document.Metadata.MaximumDepth}"
             ];
 
             _mainSelection = Math.Clamp(_mainSelection, 0, items.Count - 1);
@@ -108,6 +113,10 @@ internal sealed class TuiApp
             if (selected < profiles.Count)
             {
                 EditProfile(profiles[selected].Index);
+            }
+            else if (selected == rtonBrowserIndex)
+            {
+                BrowseRtonDocument();
             }
             else if (selected == openIndex)
             {
@@ -579,6 +588,460 @@ internal sealed class TuiApp
         }
     }
 
+    private void BrowseRtonDocument()
+    {
+        List<RtonPathStep> path = [];
+        List<int> selections = [0];
+
+        while (true)
+        {
+            RtonValue container;
+            try
+            {
+                container = ResolveRtonPath(_session.Document, path);
+            }
+            catch (InvalidDataException exception)
+            {
+                ConsoleUi.Error(exception.Message);
+                return;
+            }
+
+            string breadcrumb = GetRtonBreadcrumb(_session.Document, path);
+            if (container.Kind == RtonValueKind.Object)
+            {
+                RtonObject currentObject = container.AsObject();
+                int backIndex = currentObject.Properties.Count;
+                IReadOnlyList<string> items = new LazyMenuList(
+                    currentObject.Properties.Count,
+                    index =>
+                    {
+                        RtonProperty property = currentObject.Properties[index];
+                        string key = EscapeRtonText(property.Key.Text, escapePathSyntax: true);
+                        return $"{index,4}  {ConsoleUi.Truncate(key, 42),-42}  {FormatRtonBrowserValue(property.Value)}";
+                    },
+                    path.Count == 0 ? "Back to main menu" : "Back to parent container");
+
+                selections[path.Count] = Math.Clamp(selections[path.Count], 0, items.Count - 1);
+                int selected = ConsoleUi.Select(
+                    "RTON Browser: Object",
+                    items,
+                    [
+                        $"Breadcrumb: {breadcrumb}",
+                        $"{currentObject.Properties.Count:N0} properties | Select a property to open it, edit its value, or rename its key."
+                    ],
+                    "Up/Down: select | Enter: property actions | Esc: parent",
+                    selections[path.Count]);
+                if (selected < 0 || selected == backIndex)
+                {
+                    if (path.Count == 0)
+                    {
+                        return;
+                    }
+
+                    path.RemoveAt(path.Count - 1);
+                    selections.RemoveAt(selections.Count - 1);
+                    continue;
+                }
+
+                selections[path.Count] = selected;
+                RtonPathStep selectedStep = RtonPathStep.ObjectProperty(selected);
+                IReadOnlyList<RtonPathStep> valuePath = AppendRtonPath(path, selectedStep);
+                RtonProperty property = currentObject.Properties[selected];
+                bool isContainer = property.Value.Kind is RtonValueKind.Object or RtonValueKind.Array;
+                List<string> actions = [];
+                int openIndex = -1;
+                if (isContainer)
+                {
+                    openIndex = actions.Count;
+                    actions.Add($"Open {property.Value.Kind}");
+                }
+
+                int editIndex = -1;
+                if (!isContainer)
+                {
+                    editIndex = actions.Count;
+                    actions.Add(property.Value.IsEditable
+                        ? "Edit scalar value"
+                        : $"Scalar value is read-only (RTON type 0x{property.Value.TypeCode:X2})");
+                }
+
+                int renameIndex = actions.Count;
+                actions.Add(property.Key.IsEditable
+                    ? "Rename key"
+                    : $"Key is read-only (RTON type 0x{property.Key.TypeCode:X2})");
+                int cancelIndex = actions.Count;
+                actions.Add("Back to object");
+
+                int action = ConsoleUi.Select(
+                    "RTON Property",
+                    actions,
+                    [
+                        $"Breadcrumb: {GetRtonBreadcrumb(_session.Document, valuePath)}",
+                        $"Key: {EscapeRtonText(property.Key.Text, escapePathSyntax: true)} | RTON type 0x{property.Key.TypeCode:X2}",
+                        $"Value: {FormatRtonBrowserValue(property.Value)}"
+                    ]);
+                if (action < 0 || action == cancelIndex)
+                {
+                    continue;
+                }
+
+                if (action == openIndex)
+                {
+                    path.Add(selectedStep);
+                    selections.Add(0);
+                }
+                else if (action == editIndex)
+                {
+                    if (property.Value.IsEditable)
+                    {
+                        EditRtonScalar(valuePath);
+                    }
+                    else
+                    {
+                        ConsoleUi.Notice($"This scalar uses special RTON type 0x{property.Value.TypeCode:X2} and is read-only.");
+                    }
+                }
+                else if (action == renameIndex)
+                {
+                    if (property.Key.IsEditable)
+                    {
+                        RenameRtonObjectKey(path, selected);
+                    }
+                    else
+                    {
+                        ConsoleUi.Notice($"This key uses special RTON type 0x{property.Key.TypeCode:X2} and is read-only.");
+                    }
+                }
+            }
+            else if (container.Kind == RtonValueKind.Array)
+            {
+                RtonArray currentArray = container.AsArray();
+                int backIndex = currentArray.Items.Count;
+                IReadOnlyList<string> items = new LazyMenuList(
+                    currentArray.Items.Count,
+                    index => $"[{index,4}]  {FormatRtonBrowserValue(currentArray.Items[index])}",
+                    path.Count == 0 ? "Back to main menu" : "Back to parent container");
+
+                selections[path.Count] = Math.Clamp(selections[path.Count], 0, items.Count - 1);
+                int selected = ConsoleUi.Select(
+                    "RTON Browser: Array",
+                    items,
+                    [
+                        $"Breadcrumb: {breadcrumb}",
+                        $"{currentArray.Items.Count:N0} items | declared capacity {currentArray.DeclaredCapacity:N0} | "
+                            + "Containers open directly; editable scalars open a value editor."
+                    ],
+                    "Up/Down: select | Enter: open or edit | Esc: parent",
+                    selections[path.Count]);
+                if (selected < 0 || selected == backIndex)
+                {
+                    if (path.Count == 0)
+                    {
+                        return;
+                    }
+
+                    path.RemoveAt(path.Count - 1);
+                    selections.RemoveAt(selections.Count - 1);
+                    continue;
+                }
+
+                selections[path.Count] = selected;
+                RtonPathStep selectedStep = RtonPathStep.ArrayItem(selected);
+                IReadOnlyList<RtonPathStep> valuePath = AppendRtonPath(path, selectedStep);
+                RtonValue selectedValue = currentArray.Items[selected];
+                if (selectedValue.Kind is RtonValueKind.Object or RtonValueKind.Array)
+                {
+                    path.Add(selectedStep);
+                    selections.Add(0);
+                }
+                else if (selectedValue.IsEditable)
+                {
+                    EditRtonScalar(valuePath);
+                }
+                else
+                {
+                    ConsoleUi.Notice($"This array item uses special RTON type 0x{selectedValue.TypeCode:X2} and is read-only.");
+                }
+            }
+            else
+            {
+                ConsoleUi.Error($"The browser path resolved to {container.Kind}, not a container.");
+                return;
+            }
+        }
+    }
+
+    private void RenameRtonObjectKey(IReadOnlyList<RtonPathStep> objectPath, int propertyIndex)
+    {
+        RtonObject currentObject = ResolveRtonPath(_session.Document, objectPath).AsObject();
+        if (propertyIndex < 0 || propertyIndex >= currentObject.Properties.Count)
+        {
+            ConsoleUi.Error("The selected property no longer exists.");
+            return;
+        }
+
+        RtonProperty currentProperty = currentObject.Properties[propertyIndex];
+        string? newName = ConsoleUi.PromptStringEdit(
+            "Enter the new key name",
+            EscapeRtonText(currentProperty.Key.Text, escapePathSyntax: true));
+        if (newName is null)
+        {
+            return;
+        }
+
+        ApplyChange(
+            document => ResolveRtonPath(document, objectPath).AsObject().RenameProperty(propertyIndex, newName),
+            $"Renamed the key to \"{EscapeRtonText(newName, escapePathSyntax: true)}\".");
+    }
+
+    private void EditRtonScalar(IReadOnlyList<RtonPathStep> valuePath)
+    {
+        RtonValue current = ResolveRtonPath(_session.Document, valuePath);
+        string breadcrumb = GetRtonBreadcrumb(_session.Document, valuePath);
+        switch (current.Kind)
+        {
+            case RtonValueKind.Boolean:
+                {
+                    string? input = ConsoleUi.PromptOptional(
+                        $"Enter true/false or 1/0 for {breadcrumb}",
+                        current.ToDisplayString());
+                    if (input is null)
+                    {
+                        return;
+                    }
+
+                    bool? parsed = input.ToLowerInvariant() switch
+                    {
+                        "true" or "1" or "yes" or "y" => true,
+                        "false" or "0" or "no" or "n" => false,
+                        _ => null
+                    };
+                    if (parsed is null)
+                    {
+                        ConsoleUi.Error("The value is not a recognized Boolean.");
+                        return;
+                    }
+
+                    ApplyChange(
+                        document => ResolveRtonPath(document, valuePath).SetBoolean(parsed.Value),
+                        $"Updated {breadcrumb}.");
+                    break;
+                }
+            case RtonValueKind.SignedInteger:
+            case RtonValueKind.UnsignedInteger:
+                {
+                    string? input = ConsoleUi.PromptOptional(
+                        $"Enter the new integer for {breadcrumb}",
+                        current.ToDisplayString());
+                    if (input is null)
+                    {
+                        return;
+                    }
+
+                    if (!BigInteger.TryParse(input, NumberStyles.Integer, CultureInfo.InvariantCulture, out BigInteger parsed))
+                    {
+                        ConsoleUi.Error("The input is not a valid integer.");
+                        return;
+                    }
+
+                    ApplyChange(
+                        document => ResolveRtonPath(document, valuePath).SetInteger(parsed),
+                        $"Updated {breadcrumb}.");
+                    break;
+                }
+            case RtonValueKind.FloatingPoint:
+                {
+                    string? input = ConsoleUi.PromptOptional(
+                        $"Enter the new floating-point value for {breadcrumb}",
+                        current.ToDisplayString());
+                    if (input is null)
+                    {
+                        return;
+                    }
+
+                    if (!double.TryParse(input, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed)
+                        || !double.IsFinite(parsed))
+                    {
+                        ConsoleUi.Error("The input is not a finite floating-point number.");
+                        return;
+                    }
+
+                    ApplyChange(
+                        document => ResolveRtonPath(document, valuePath).SetFloatingPoint(parsed),
+                        $"Updated {breadcrumb}.");
+                    break;
+                }
+            case RtonValueKind.String:
+                {
+                    string? input = ConsoleUi.PromptStringEdit(
+                        $"Enter the new string for {breadcrumb}",
+                        EscapeRtonText(current.AsString(), escapePathSyntax: false));
+                    if (input is null)
+                    {
+                        return;
+                    }
+
+                    ApplyChange(
+                        document => ResolveRtonPath(document, valuePath).SetString(input),
+                        $"Updated {breadcrumb}.");
+                    break;
+                }
+            default:
+                ConsoleUi.Notice($"This value uses RTON type 0x{current.TypeCode:X2} and is read-only.");
+                break;
+        }
+    }
+
+    private static RtonValue ResolveRtonPath(RtonDocument document, IReadOnlyList<RtonPathStep> path)
+    {
+        RtonValue current = SaveDataNavigator.WrapRoot(document.Root);
+        foreach (RtonPathStep step in path)
+        {
+            if (step.FromObjectProperty)
+            {
+                if (current.Kind != RtonValueKind.Object)
+                {
+                    throw new InvalidDataException("The RTON navigation path expected an object.");
+                }
+
+                IReadOnlyList<RtonProperty> properties = current.AsObject().Properties;
+                if (step.Index < 0 || step.Index >= properties.Count)
+                {
+                    throw new InvalidDataException("An object property in the RTON navigation path no longer exists.");
+                }
+
+                current = properties[step.Index].Value;
+            }
+            else
+            {
+                if (current.Kind != RtonValueKind.Array)
+                {
+                    throw new InvalidDataException("The RTON navigation path expected an array.");
+                }
+
+                IReadOnlyList<RtonValue> items = current.AsArray().Items;
+                if (step.Index < 0 || step.Index >= items.Count)
+                {
+                    throw new InvalidDataException("An array item in the RTON navigation path no longer exists.");
+                }
+
+                current = items[step.Index];
+            }
+        }
+
+        return current;
+    }
+
+    private static string GetRtonBreadcrumb(RtonDocument document, IReadOnlyList<RtonPathStep> path)
+    {
+        StringBuilder breadcrumb = new("$");
+        RtonValue current = SaveDataNavigator.WrapRoot(document.Root);
+        foreach (RtonPathStep step in path)
+        {
+            if (step.FromObjectProperty)
+            {
+                if (current.Kind != RtonValueKind.Object
+                    || step.Index < 0
+                    || step.Index >= current.AsObject().Properties.Count)
+                {
+                    throw new InvalidDataException("An object property in the RTON breadcrumb no longer exists.");
+                }
+
+                RtonProperty property = current.AsObject().Properties[step.Index];
+                breadcrumb.Append(FormatRtonKeyPathSegment(property.Key.Text));
+                current = property.Value;
+            }
+            else
+            {
+                if (current.Kind != RtonValueKind.Array
+                    || step.Index < 0
+                    || step.Index >= current.AsArray().Items.Count)
+                {
+                    throw new InvalidDataException("An array item in the RTON breadcrumb no longer exists.");
+                }
+
+                breadcrumb.Append('[').Append(step.Index).Append(']');
+                current = current.AsArray().Items[step.Index];
+            }
+        }
+
+        return breadcrumb.ToString();
+    }
+
+    private static string FormatRtonKeyPathSegment(string key)
+    {
+        bool isIdentifier = key.Length > 0
+            && (char.IsLetter(key[0]) || key[0] == '_')
+            && key.Skip(1).All(character => char.IsLetterOrDigit(character) || character == '_');
+        if (isIdentifier)
+        {
+            return "." + key;
+        }
+
+        string escaped = EscapeRtonText(key, escapePathSyntax: true);
+        return $"[\"{escaped}\"]";
+    }
+
+    private static string EscapeRtonText(string value, bool escapePathSyntax)
+    {
+        StringBuilder escaped = new(value.Length);
+        foreach (char character in value)
+        {
+            switch (character)
+            {
+                case '\r':
+                    escaped.Append("\\r");
+                    break;
+                case '\n':
+                    escaped.Append("\\n");
+                    break;
+                case '\t':
+                    escaped.Append("\\t");
+                    break;
+                case '\\' when escapePathSyntax:
+                    escaped.Append("\\\\");
+                    break;
+                case '\"' when escapePathSyntax:
+                    escaped.Append("\\\"");
+                    break;
+                default:
+                    if (char.IsControl(character))
+                    {
+                        escaped.Append("\\u").Append(((int)character).ToString("X4", CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        escaped.Append(character);
+                    }
+
+                    break;
+            }
+        }
+
+        return escaped.ToString();
+    }
+
+    private static string FormatRtonBrowserValue(RtonValue value)
+    {
+        string summary = EscapeRtonText(value.ToDisplayString(90), escapePathSyntax: false);
+        return value.Kind switch
+        {
+            RtonValueKind.Object or RtonValueKind.Array => $"{value.Kind} 0x{value.TypeCode:X2} | {summary}",
+            RtonValueKind.Special => $"Special 0x{value.TypeCode:X2} | {summary}",
+            _ => $"{value.Kind} 0x{value.TypeCode:X2} | {summary}"
+        };
+    }
+
+    private static IReadOnlyList<RtonPathStep> AppendRtonPath(
+        IReadOnlyList<RtonPathStep> path,
+        RtonPathStep step)
+    {
+        List<RtonPathStep> result = new(path.Count + 1);
+        result.AddRange(path);
+        result.Add(step);
+        return result;
+    }
+
     private void AdvancedSearch(RtonValue root, string rootPath, string title)
     {
         string? query = ConsoleUi.PromptOptional("Enter a field path or value to search for, such as .c, plis, or Mastery");
@@ -761,7 +1224,7 @@ internal sealed class TuiApp
             return;
         }
 
-        string? path = NormalizePath(ConsoleUi.PromptOptional("Enter another pp.dat path, or drag the file into this window and press Enter"));
+        string? path = NormalizePath(ConsoleUi.PromptOptional("Enter another RTON file path, or drag the file into this window and press Enter"));
         if (string.IsNullOrWhiteSpace(path))
         {
             return;
@@ -787,7 +1250,19 @@ internal sealed class TuiApp
     private void SaveAs()
     {
         string directory = Path.GetDirectoryName(_session.Path) ?? Environment.CurrentDirectory;
-        string suggested = Path.Combine(directory, "pp.edited.dat");
+        string extension = Path.GetExtension(_session.Path);
+        if (string.IsNullOrEmpty(extension))
+        {
+            extension = ".dat";
+        }
+
+        string baseName = Path.GetFileNameWithoutExtension(_session.Path);
+        if (string.IsNullOrEmpty(baseName))
+        {
+            baseName = "save";
+        }
+
+        string suggested = Path.Combine(directory, $"{baseName}.edited{extension}");
         string? path = ConsoleUi.PromptWithDefault(
             "Enter the Save As path (relative paths use the current save directory)",
             suggested);
@@ -1000,6 +1475,41 @@ internal sealed class TuiApp
         }
 
         return Environment.ExpandEnvironmentVariables(normalized);
+    }
+
+    private readonly record struct RtonPathStep(bool FromObjectProperty, int Index)
+    {
+        public static RtonPathStep ObjectProperty(int index) => new(true, index);
+        public static RtonPathStep ArrayItem(int index) => new(false, index);
+    }
+
+    private sealed class LazyMenuList(int contentCount, Func<int, string> formatter, string finalItem)
+        : IReadOnlyList<string>
+    {
+        public int Count { get; } = checked(contentCount + 1);
+
+        public string this[int index]
+        {
+            get
+            {
+                if ((uint)index >= (uint)Count)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(index));
+                }
+
+                return index == contentCount ? finalItem : formatter(index);
+            }
+        }
+
+        public IEnumerator<string> GetEnumerator()
+        {
+            for (int index = 0; index < Count; index++)
+            {
+                yield return this[index];
+            }
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private sealed record CurrencyDefinition(string Label, string Field);

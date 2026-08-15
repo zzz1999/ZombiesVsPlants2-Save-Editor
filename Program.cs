@@ -90,12 +90,12 @@ internal static class Program
         Console.WriteLine($"{ApplicationName} {ApplicationVersion}");
         Console.WriteLine();
         Console.WriteLine("Usage:");
-        Console.WriteLine("  ZombiesVsPlants2.SaveEditor.exe [pp.dat]");
-        Console.WriteLine("  ZombiesVsPlants2.SaveEditor.exe --inspect <pp.dat>");
-        Console.WriteLine("  ZombiesVsPlants2.SaveEditor.exe --self-test <pp.dat>");
+        Console.WriteLine("  ZombiesVsPlants2.SaveEditor.exe [RTON-file]");
+        Console.WriteLine("  ZombiesVsPlants2.SaveEditor.exe --inspect <RTON-file>");
+        Console.WriteLine("  ZombiesVsPlants2.SaveEditor.exe --self-test <RTON-file>");
         Console.WriteLine("  ZombiesVsPlants2.SaveEditor.exe --roundtrip <input> <output>");
         Console.WriteLine();
-        Console.WriteLine("Interactive mode supports profile selection, resource editing, bulk and individual plant editing, field search, undo, automatic backups, and atomic saves.");
+        Console.WriteLine("Interactive mode supports hierarchical RTON browsing, key and scalar-value editing, save shortcuts, search, undo, automatic backups, and atomic saves.");
     }
 
     private static string ResolveApplicationVersion()

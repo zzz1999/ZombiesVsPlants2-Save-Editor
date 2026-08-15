@@ -1,12 +1,16 @@
 # Zombies vs Plants 2 Save Editor
 
-A dependency-free .NET 8 terminal user interface for inspecting and editing standard RTON v1 `pp.dat` save files.
+A dependency-free .NET 8 terminal user interface for inspecting and editing standard RTON v1 files, with dedicated shortcuts for supported `pp.dat` save data.
 
 The published executable enters the TUI by default. File loading, profile discovery, editing, undo, and saving are all implemented as interactive terminal flows; the command-line surface exists only for development diagnostics.
 
 ## TUI capabilities
 
 - Automatically discovers every profile in the loaded save.
+- Opens ordinary standard RTON v1 files even when they contain no recognizable save profile.
+- Browses objects and arrays hierarchically with live, escaped breadcrumbs and lazy menus.
+- Renames editable object keys and rejects duplicate keys within the same object.
+- Edits Boolean, integer, floating-point, and string values while displaying their RTON type tags.
 - Displays profile names, resources, unlocked-plant counts, file status, and RTON metadata.
 - Edits individual resource fields or assigns one value to all five resource fields.
 - Resolves supported plant IDs to English names and keeps unknown future IDs visible.
@@ -19,6 +23,8 @@ The published executable enters the TUI by default. File loading, profile discov
 - Searches the decoded tree for dynamically named scalar fields.
 - Supports undo, reload, Save As, and in-place save from the TUI.
 
+The hierarchical RTON browser exposes raw stored values. The dedicated save-data menus apply the documented plant progression limits and player-visible Level conversion.
+
 ## Codec design
 
 The editor uses its own type-preserving standard RTON v1 codec. It preserves original tags and string-pool references where possible and supports:
@@ -27,6 +33,7 @@ The editor uses its own type-preserving standard RTON v1 codec. It preserves ori
 - `f32` and `f64`, including unchanged non-finite bit patterns.
 - Legacy single-byte and UTF-8 direct and interned strings.
 - Automatic promotion to UTF-8 when an edited string is not ASCII.
+- Type-preserving object-key edits, including string-pool reconstruction and UTF-8 promotion.
 - Unicode scalar counts for UTF-8 strings.
 - Objects and capacity-based arrays with early terminators.
 - Opaque RTID and binary-blob payload round trips.
@@ -59,13 +66,13 @@ dotnet run -c Release
 Developer-only diagnostics:
 
 ```powershell
-dotnet run -c Release -- --inspect <pp.dat>
-dotnet run -c Release -- --self-test <pp.dat>
+dotnet run -c Release -- --inspect <rton-file>
+dotnet run -c Release -- --self-test <rton-file>
 dotnet run -c Release -- --roundtrip <input.dat> <output.dat>
 dotnet run -c Release -- --fixture-test
 ```
 
-The tests verify byte-identical no-op round trips, UTF-8 promotion, legacy string preservation, binary blobs, RTIDs, Boolean payloads, signaling-NaN preservation, capacity arrays, malformed VarInt rejection, catalog limits, ownership edits, undo behavior, backups, transactional saves, and external-change conflict detection.
+The tests verify byte-identical no-op round trips, key and value editing, duplicate-key rejection, UTF-8 promotion, string-pool reconstruction, legacy string preservation, binary blobs, RTIDs, Boolean payloads, signaling-NaN preservation, capacity arrays, malformed VarInt rejection, catalog limits, ownership edits, no-profile RTON sessions, undo behavior, backups, transactional saves, and external-change conflict detection.
 
 ## Continuous delivery
 
@@ -75,7 +82,7 @@ The tests verify byte-identical no-op round trips, UTF-8 promotion, legacy strin
 
 - `Rton/`: type-preserving RTON model, reader, and writer.
 - `Editor/`: profile navigation, dynamic scalar search, undo, and save sessions.
-- `Tui/`: keyboard-driven terminal interface.
+- `Tui/`: keyboard-driven profile tools and hierarchical RTON browser.
 - `Diagnostics/`: inspection and regression-test entry points.
 
 ## Disclaimer

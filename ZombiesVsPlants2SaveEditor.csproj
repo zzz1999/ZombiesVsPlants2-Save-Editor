@@ -9,8 +9,8 @@
     <AssemblyTitle>Zombies vs Plants 2 Save Editor</AssemblyTitle>
     <RootNamespace>ZombiesVsPlants2.SaveEditor</RootNamespace>
     <Product>Zombies vs Plants 2 Save Editor</Product>
-    <Description>Terminal user interface for editing standard RTON v1 pp.dat save files.</Description>
-    <Version>1.1.0</Version>
+    <Description>Terminal user interface for editing standard RTON v1 files and supported pp.dat save data.</Description>
+    <Version>1.2.0</Version>
     <DebugType>embedded</DebugType>
     <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>

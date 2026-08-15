@@ -39,7 +39,7 @@ internal static class DiagnosticsRunner
         string fullOutputPath = Path.GetFullPath(outputPath);
         if (string.Equals(fullInputPath, fullOutputPath, StringComparison.OrdinalIgnoreCase))
         {
-            throw new ArgumentException("--roundtrip requires different input and output files; it never overwrites the source save.");
+            throw new ArgumentException("--roundtrip requires different input and output files; it never overwrites the source RTON file.");
         }
 
         byte[] source = File.ReadAllBytes(fullInputPath);
@@ -77,33 +77,42 @@ internal static class DiagnosticsRunner
         Pass($"Unmodified round-trip SHA-256 is identical: {sourceHash}");
 
         IReadOnlyList<ProfileView> profiles = SaveDataNavigator.GetProfiles(document);
-        Require(profiles.Count > 0, "At least one recognizable profile is required");
-        ProfileView first = profiles[0];
-        BigInteger originalCoins = first.GetInteger("c") ?? throw new InvalidDataException("The test profile is missing field 'c'.");
-        BigInteger editedCoins = originalCoins < int.MaxValue ? originalCoins + 1 : originalCoins - 1;
-        first.SetInteger("c", editedCoins);
-        string editedName = first.Name + " self-test ✓";
-        first.SetString("n", editedName);
-
-        PlantStatView? plant = first.GetPlantStats().FirstOrDefault(record => !record.IsImitater);
-        BigInteger? editedLevel = null;
-        if (plant?.StoredLevel is BigInteger originalLevel)
+        bool hasRecognizableProfile = profiles.Count > 0;
+        BigInteger editedCoins = default;
+        if (hasRecognizableProfile)
         {
-            editedLevel = originalLevel == -1 ? BigInteger.Zero : new BigInteger(-1);
-            plant.SetInteger("l", editedLevel.Value);
-        }
+            ProfileView first = profiles[0];
+            BigInteger originalCoins = first.GetInteger("c")
+                ?? throw new InvalidDataException("The test profile is missing field 'c'.");
+            editedCoins = originalCoins < int.MaxValue ? originalCoins + 1 : originalCoins - 1;
+            first.SetInteger("c", editedCoins);
+            string editedName = first.Name + " self-test ✓";
+            first.SetString("n", editedName);
 
-        byte[] editedBytes = RtonCodec.Encode(document);
-        RtonDocument editedDocument = RtonCodec.Decode(editedBytes);
-        ProfileView editedProfile = SaveDataNavigator.GetProfiles(editedDocument)[0];
-        Require(editedProfile.GetInteger("c") == editedCoins, "Edited field 'c' must be readable after decoding");
-        Require(editedProfile.Name == editedName, "An edited Unicode profile name must be readable after decoding");
-        if (editedLevel is not null)
+            PlantStatView? plant = first.GetPlantStats().FirstOrDefault(record => !record.IsImitater);
+            BigInteger? editedLevel = null;
+            if (plant?.StoredLevel is BigInteger originalLevel)
+            {
+                editedLevel = originalLevel == -1 ? BigInteger.Zero : new BigInteger(-1);
+                plant.SetInteger("l", editedLevel.Value);
+            }
+
+            byte[] editedBytes = RtonCodec.Encode(document);
+            RtonDocument editedDocument = RtonCodec.Decode(editedBytes);
+            ProfileView editedProfile = SaveDataNavigator.GetProfiles(editedDocument)[0];
+            Require(editedProfile.GetInteger("c") == editedCoins, "Edited field 'c' must be readable after decoding");
+            Require(editedProfile.Name == editedName, "An edited Unicode profile name must be readable after decoding");
+            if (editedLevel is not null)
+            {
+                Require(editedProfile.GetPlantStats()[0].StoredLevel == editedLevel, "A negative plant level must round-trip through its ZigZag type");
+            }
+
+            Pass("Resource, Unicode name, and negative plant-level edits decode successfully");
+        }
+        else
         {
-            Require(editedProfile.GetPlantStats()[0].StoredLevel == editedLevel, "A negative plant level must round-trip through its ZigZag type");
+            Pass("No recognizable save profile was found; generic RTON validation continues");
         }
-
-        Pass("Resource, Unicode name, and negative plant-level edits decode successfully");
 
         byte[] truncated = source[..^1];
         bool truncationRejected = false;
@@ -134,13 +143,24 @@ internal static class DiagnosticsRunner
             string temporarySave = Path.Combine(temporaryRoot, "pp.dat");
             File.WriteAllBytes(temporarySave, source);
             EditorSession session = EditorSession.Load(temporarySave);
-            session.ApplyChange(testDocument =>
-                SaveDataNavigator.GetProfiles(testDocument)[0].SetInteger("c", editedCoins));
-            Require(session.IsDirty, "A modified session must be marked as unsaved");
-            Require(session.Undo(), "A modification must be undoable");
-            Require(!session.IsDirty, "Undoing to the source bytes must clear the unsaved state");
-            session.ApplyChange(testDocument =>
-                SaveDataNavigator.GetProfiles(testDocument)[0].SetInteger("c", editedCoins));
+            byte[] externalBytes;
+            if (hasRecognizableProfile)
+            {
+                session.ApplyChange(testDocument =>
+                    SaveDataNavigator.GetProfiles(testDocument)[0].SetInteger("c", editedCoins));
+                Require(session.IsDirty, "A modified session must be marked as unsaved");
+                Require(session.Undo(), "A modification must be undoable");
+                Require(!session.IsDirty, "Undoing to the source bytes must clear the unsaved state");
+                session.ApplyChange(testDocument =>
+                    SaveDataNavigator.GetProfiles(testDocument)[0].SetInteger("c", editedCoins));
+            }
+            else
+            {
+                bool changed = session.ApplyChange(_ => { });
+                Require(!changed, "A no-op generic RTON edit must report that no bytes changed");
+                Require(!session.IsDirty, "A no-op generic RTON edit must not mark the session as unsaved");
+                Require(!session.Undo(), "A no-op generic RTON edit must not create an undo entry");
+            }
 
             SaveResult saveResult = session.Save(temporarySave, createBackup: true);
             string backupPath = saveResult.BackupPath
@@ -148,11 +168,22 @@ internal static class DiagnosticsRunner
             Require(File.Exists(backupPath), "An overwrite save must create a backup");
             Require(File.ReadAllBytes(backupPath).AsSpan().SequenceEqual(source), "The backup must be byte-identical to the pre-save file");
             Require(!session.IsDirty, "A successful save must clear the unsaved state");
-            ProfileView savedProfile = SaveDataNavigator.GetProfiles(RtonCodec.Decode(File.ReadAllBytes(temporarySave)))[0];
-            Require(savedProfile.GetInteger("c") == editedCoins, "The atomically saved file must contain the edited value");
+            if (hasRecognizableProfile)
+            {
+                ProfileView savedProfile = SaveDataNavigator.GetProfiles(RtonCodec.Decode(File.ReadAllBytes(temporarySave)))[0];
+                Require(savedProfile.GetInteger("c") == editedCoins, "The atomically saved file must contain the edited value");
+                externalBytes = source;
+            }
+            else
+            {
+                Require(
+                    File.ReadAllBytes(temporarySave).AsSpan().SequenceEqual(source),
+                    "Saving an unmodified profile-free RTON file must preserve its exact bytes");
+                externalBytes = [0x01, 0x02, 0x03];
+            }
 
             // Simulate an external writer replacing the file after this session saved it.
-            File.WriteAllBytes(temporarySave, source);
+            File.WriteAllBytes(temporarySave, externalBytes);
             bool externalChangeRejected = false;
             try
             {
@@ -164,8 +195,10 @@ internal static class DiagnosticsRunner
             }
 
             Require(externalChangeRejected, "An externally modified file must not be overwritten silently");
-            Require(File.ReadAllBytes(temporarySave).AsSpan().SequenceEqual(source), "Conflict detection must leave the external version unchanged");
-            Pass("Undo, automatic backup, atomic overwrite, and external-change conflict detection work");
+            Require(File.ReadAllBytes(temporarySave).AsSpan().SequenceEqual(externalBytes), "Conflict detection must leave the external version unchanged");
+            Pass(hasRecognizableProfile
+                ? "Undo, automatic backup, atomic overwrite, and external-change conflict detection work"
+                : "Profile-free RTON session loading, byte-exact saving, backup, and conflict detection work");
         }
         finally
         {

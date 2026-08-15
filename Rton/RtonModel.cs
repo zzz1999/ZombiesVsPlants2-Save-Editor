@@ -43,6 +43,37 @@ internal sealed class RtonStringToken
     public byte[]? RawPayload { get; init; }
 
     public bool IsEditable => TypeCode is 0x81 or 0x82 or 0x90 or 0x91 or 0x92 or 0x93;
+
+    public bool SetText(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (string.Equals(Text, value, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!IsEditable)
+        {
+            throw new InvalidOperationException("This special string type is read-only.");
+        }
+
+        Text = value;
+        // Single-byte string tags are reserved for ASCII; edited non-ASCII text must use UTF-8 tags.
+        if (!IsAscii(value))
+        {
+            TypeCode = TypeCode switch
+            {
+                0x81 => 0x82,
+                0x90 => 0x92,
+                0x91 => 0x93,
+                _ => TypeCode
+            };
+        }
+
+        return true;
+    }
+
+    private static bool IsAscii(string value) => value.All(character => character <= '\u007F');
 }
 
 internal sealed class RtonProperty
@@ -59,6 +90,40 @@ internal sealed class RtonObject
         Properties.FirstOrDefault(property => string.Equals(property.Key.Text, name, StringComparison.Ordinal));
 
     public RtonValue? FindValue(string name) => FindProperty(name)?.Value;
+
+    public bool RenameProperty(int propertyIndex, string newName)
+    {
+        ArgumentNullException.ThrowIfNull(newName);
+        if ((uint)propertyIndex >= (uint)Properties.Count)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(propertyIndex),
+                propertyIndex,
+                $"The property index must be between 0 and {Properties.Count - 1}.");
+        }
+
+        RtonStringToken key = Properties[propertyIndex].Key;
+        if (string.Equals(key.Text, newName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!key.IsEditable)
+        {
+            throw new InvalidOperationException("This special property key type is read-only.");
+        }
+
+        for (int index = 0; index < Properties.Count; index++)
+        {
+            if (index != propertyIndex
+                && string.Equals(Properties[index].Key.Text, newName, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"The object already contains a property named '{newName}'.");
+            }
+        }
+
+        return key.SetText(newName);
+    }
 }
 
 internal sealed class RtonArray
@@ -150,27 +215,8 @@ internal sealed class RtonValue
         }
 
         RtonStringToken token = (RtonStringToken)Data;
-        if (!token.IsEditable)
+        if (token.SetText(value))
         {
-            throw new InvalidOperationException("This special string type is read-only.");
-        }
-
-        if (string.Equals(token.Text, value, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        token.Text = value;
-        // Single-byte string tags are reserved for ASCII; edited non-ASCII text must use UTF-8 tags.
-        if (!IsAscii(value))
-        {
-            token.TypeCode = token.TypeCode switch
-            {
-                0x81 => 0x82,
-                0x90 => 0x92,
-                0x91 => 0x93,
-                _ => token.TypeCode
-            };
             TypeCode = token.TypeCode;
         }
     }
@@ -320,6 +366,4 @@ internal sealed class RtonValue
         };
         return true;
     }
-
-    private static bool IsAscii(string value) => value.All(character => character <= '\u007F');
 }

@@ -13,6 +13,7 @@ internal static class EditorRegressionFixtures
         VerifyPlantProgressionLimits();
         VerifyOwnershipEdit();
         VerifyProtectedPlantPaths();
+        VerifyProfileDiscoveryRequiresPlayerInfoClass();
     }
 
     private static void VerifyCatalogSnapshot()
@@ -112,6 +113,45 @@ internal static class EditorRegressionFixtures
             "Unrelated profile fields must remain available to Advanced Search.");
     }
 
+    private static void VerifyProfileDiscoveryRequiresPlayerInfoClass()
+    {
+        RtonObject unrelatedContainer = new();
+        unrelatedContainer.Properties.Add(Property("objclass", StringValue("Other")));
+        unrelatedContainer.Properties.Add(Property("objdata", ObjectValue(new RtonObject())));
+
+        RtonDocument unrelatedDocument = CreateDocument(ObjectValue(unrelatedContainer));
+        Require(
+            SaveDataNavigator.GetProfiles(unrelatedDocument).Count == 0,
+            "An ordinary RTON object with objdata must not be mistaken for a PlayerInfo profile.");
+
+        RtonObject playerInfoContainer = new();
+        playerInfoContainer.Properties.Add(Property("objclass", StringValue("PlayerInfo")));
+        playerInfoContainer.Properties.Add(Property("objdata", ObjectValue(new RtonObject())));
+
+        RtonDocument playerInfoDocument = CreateDocument(ObjectValue(playerInfoContainer));
+        IReadOnlyList<ProfileView> profiles = SaveDataNavigator.GetProfiles(playerInfoDocument);
+        Require(
+            profiles.Count == 1 && profiles[0].Index == 0,
+            "An exact PlayerInfo object must remain discoverable as a profile.");
+    }
+
+    private static RtonDocument CreateDocument(params RtonValue[] objectItems)
+    {
+        RtonArray objects = new() { DeclaredCapacity = objectItems.Length };
+        objects.Items.AddRange(objectItems);
+        RtonObject root = new();
+        root.Properties.Add(Property("objects", ArrayValue(objects)));
+        return new RtonDocument
+        {
+            Version = 1,
+            Root = root,
+            Metadata = new RtonMetadata
+            {
+                TypeCounts = new Dictionary<byte, int>()
+            }
+        };
+    }
+
     private static PlantStatView CreatePlantRecord(int id, int storedLevel, int seedPackets, int mastery)
     {
         RtonObject record = new();
@@ -138,6 +178,18 @@ internal static class EditorRegressionFixtures
         TypeCode = value == 0 ? (byte)0x21 : (byte)0x24,
         Kind = RtonValueKind.SignedInteger,
         Data = value
+    };
+
+    private static RtonValue StringValue(string value) => new()
+    {
+        TypeCode = 0x81,
+        Kind = RtonValueKind.String,
+        Data = new RtonStringToken
+        {
+            TypeCode = 0x81,
+            Text = value,
+            OriginalText = value
+        }
     };
 
     private static RtonValue ArrayValue(RtonArray value) => new()
