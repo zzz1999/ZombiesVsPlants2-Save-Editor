@@ -76,7 +76,7 @@ The tests verify byte-identical no-op round trips, key and value editing, duplic
 
 ## Continuous delivery
 
-`.github/workflows/rolling-release.yml` runs after every push to `main`. It builds a trimmed, self-contained `win-x64` single-file executable, generates a SHA-256 checksum, moves the fixed `latest` tag to the current commit, and replaces the assets in one rolling GitHub Release named `Latest Windows Build`.
+`.github/workflows/versioned-release.yml` validates every push to `main`. Increase the project `Version` to a new `major.minor.patch` value to publish a release. The workflow creates a permanent `v<Version>` tag and a GitHub Release containing the trimmed, self-contained `win-x64` executable and its SHA-256 checksum. Published version releases are never modified by the workflow. Pushes that do not increase `Version` run the build and regression fixtures without creating a release; a manual workflow run can reconcile an interrupted draft for the current version.
 
 ## Project layout
 
