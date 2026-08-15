@@ -76,7 +76,7 @@ The tests verify byte-identical no-op round trips, key and value editing, duplic
 
 ## Continuous delivery
 
-`.github/workflows/versioned-release.yml` validates every push to `main`. Increase the project `Version` to a new `major.minor.patch` value to publish a release. The workflow creates a permanent `v<Version>` tag and a GitHub Release containing the trimmed, self-contained `win-x64` executable and its SHA-256 checksum. Published version releases are never modified by the workflow. Pushes that do not increase `Version` run the build and regression fixtures without creating a release; a manual workflow run can reconcile an interrupted draft for the current version.
+`.github/workflows/versioned-release.yml` validates every push to `main`. Increase the project `Version` to a new `major.minor.patch` value to publish a release. The workflow creates a permanent `v<Version>` tag and a GitHub Release containing the trimmed, self-contained `win-x64` executable and its SHA-256 checksum. Published version releases are never modified by the workflow. Pushes that retain an already tagged version run the build and regression fixtures without creating a release; an untagged current version is reconciled automatically, and a manual workflow run can recover an interrupted draft.
 
 ## Project layout
 

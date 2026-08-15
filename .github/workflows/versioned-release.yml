@@ -70,11 +70,22 @@ jobs:
                 throw "Version rollback from $previousVersion to $version is not allowed."
               }
 
-              $releaseRequested = $comparison -gt 0
-              if ($releaseRequested) {
+              if ($comparison -gt 0) {
+                $releaseRequested = $true
                 Write-Host "Version increased from $previousVersion to $version."
               } else {
-                Write-Host "Version remains $version; this push will validate without publishing a release."
+                $tag = "v$version"
+                $remoteTag = @(git ls-remote --tags origin "refs/tags/$tag")
+                if ($LASTEXITCODE -ne 0) {
+                  throw "Unable to query remote tag $tag."
+                }
+
+                $releaseRequested = $remoteTag.Count -eq 0
+                if ($releaseRequested) {
+                  Write-Host "Version remains $version but has no tag; this push will reconcile its release."
+                } else {
+                  Write-Host "Version remains $version and is already tagged; this push will validate without publishing a release."
+                }
               }
             }
           }
@@ -118,6 +129,7 @@ jobs:
           $commitLine = if ($peeledLine) { $peeledLine } else { $tagLine }
           $remoteCommit = if ($commitLine) { ($commitLine -split '\s+')[0] } else { $null }
 
+          $PSNativeCommandUseErrorActionPreference = $false
           $releaseJson = gh release view $tag --json isDraft,assets,tagName 2>$null
           $releaseExitCode = $LASTEXITCODE
           $release = if ($releaseExitCode -eq 0) { $releaseJson | ConvertFrom-Json } else { $null }
@@ -163,6 +175,8 @@ jobs:
           }
 
           "action=$action" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          # A missing release is an expected query result, so do not leak gh's handled exit code to the step wrapper.
+          $global:LASTEXITCODE = 0
 
       - name: Publish self-contained single-file executable
         if: steps.version.outputs.release == 'true' && steps.release_state.outputs.action != 'skip'
